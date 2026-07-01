@@ -46,7 +46,7 @@ export default function AppSelect({ v, M }) {
         </Text>
       </View>
 
-      <GButton label="Done" onPress={() => M.go('settings')} style={{ marginTop: 16 }} />
+      <GButton label="Choose apps to block" onPress={() => M.configureBlockedApps().then(() => M.go('settings'))} style={{ marginTop: 16 }} />
     </Scroll>
   );
 }

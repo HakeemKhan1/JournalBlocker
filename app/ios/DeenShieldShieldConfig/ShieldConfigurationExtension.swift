@@ -2,9 +2,10 @@
 //  ShieldConfigurationExtension.swift
 //  DeenShieldShieldConfig
 //
-//  Premium "Opal-style" shield UI for blocked apps.
-//  Reads current prayer name from App Group shared state and
-//  displays an Apple-clean custom block screen.
+//  Journal Blocker — the custom block screen shown over shielded apps.
+//  Copy is phase-aware: it reads `lockPhase` from the App Group shared state
+//  and speaks to either the mandatory morning gate or a voluntary lock-in.
+//  (See BLOCKING-PRD.md §5.)
 //
 
 import ManagedSettings
@@ -21,40 +22,38 @@ class ShieldConfigurationExtension: ShieldConfigurationDataSource {
         category: "ShieldConfig"
     )
 
-    // MARK: - Design Tokens (HIG-compliant)
+    // MARK: - Design Tokens
 
-    /// Deep Emerald — primary dark background tint
-    private let emeraldBg = UIColor(red: 15/255, green: 36/255, blue: 21/255, alpha: 1.0)
-    /// Vibrant Mint — accent for interactive elements
-    private let mint = UIColor(red: 47/255, green: 160/255, blue: 94/255, alpha: 1.0)
-    /// Warm Gold — secondary accent
-    private let gold = UIColor(red: 212/255, green: 175/255, blue: 55/255, alpha: 1.0)
-    /// Soft white for body text
+    /// Deep indigo — matches the app's dark canvas.
+    private let bgTint = UIColor(red: 10/255, green: 9/255, blue: 19/255, alpha: 1.0)
+    /// Peach accent (the "orb" gradient midpoint) for the primary action.
+    private let accent = UIColor(red: 245/255, green: 169/255, blue: 127/255, alpha: 1.0)
+    private let onAccent = UIColor(red: 26/255, green: 18/255, blue: 20/255, alpha: 1.0)
     private let textPrimary = UIColor.white
-    /// Muted white for subtitles
     private let textSecondary = UIColor(white: 1.0, alpha: 0.7)
 
-    // MARK: - Current Prayer Name
+    // MARK: - Shared state
 
-    /// Reads the current prayer from the App Group shared state.
-    /// Falls back to "Prayer" if unavailable.
-    private func currentPrayerName() -> String {
+    private func sharedState() -> [String: Any] {
         let defaults = UserDefaults(suiteName: appGroupId)
-        let shared = defaults?.dictionary(forKey: "sharedState") as? [String: Any]
-        
-        guard let prayerId = shared?["currentPrayer"] as? String else {
-            return "Prayer"
-        }
+        return defaults?.dictionary(forKey: "sharedState") as? [String: Any] ?? [:]
+    }
 
-        // Capitalize first letter: "fajr" -> "Fajr"
-        let labels: [String: String] = [
-            "fajr": "Fajr",
-            "dhuhr": "Dhuhr",
-            "asr": "Asr",
-            "maghrib": "Maghrib",
-            "isha": "Isha"
-        ]
-        return labels[prayerId] ?? prayerId.capitalized
+    private func currentPhase() -> String {
+        (sharedState()["lockPhase"] as? String) ?? "morningGate"
+    }
+
+    /// Best-effort "Xh Ym left" string for a lock-in session.
+    private func lockInRemaining() -> String? {
+        guard let iso = sharedState()["lockInUntil"] as? String else { return nil }
+        let fmt = ISO8601DateFormatter()
+        guard let end = fmt.date(from: iso) else { return nil }
+        let secs = Int(end.timeIntervalSinceNow)
+        guard secs > 0 else { return nil }
+        let hours = secs / 3600
+        let mins = (secs % 3600) / 60
+        if hours > 0 { return "\(hours)h \(mins)m left" }
+        return "\(mins)m left"
     }
 
     // MARK: - ShieldConfigurationDataSource
@@ -79,53 +78,40 @@ class ShieldConfigurationExtension: ShieldConfigurationDataSource {
 
     // MARK: - Build Configuration
 
-    /// Constructs the premium shield UI.
-    ///
-    /// Layout follows Apple HIG:
-    ///  - System-provided blur background (dark material)
-    ///  - Clear, legible title and subtitle
-    ///  - Primary action button styled with mint accent
-    ///  - Secondary dismiss option
-    ///
     private func buildShieldConfiguration() -> ShieldConfiguration {
-        let prayer = currentPrayerName()
+        let phase = currentPhase()
 
-        Self.logger.info("Building shield config for prayer: \(prayer)")
+        let title: String
+        let subtitle: String
+        let primary: String
+        let secondary: String?
+
+        if phase == "lockIn" {
+            title = "You're locked in."
+            subtitle = lockInRemaining() ?? "Focused session in progress."
+            primary = "Back to work"
+            secondary = "End early"
+        } else {
+            // morningGate (default)
+            title = "Start your day."
+            subtitle = "One quick journal opens your apps."
+            primary = "Journal"
+            secondary = nil
+        }
+
+        Self.logger.info("Building shield config for phase: \(phase)")
 
         return ShieldConfiguration(
-            // Background: dark material blur (system-provided)
             backgroundBlurStyle: .systemMaterialDark,
-
-            // Tint: subtle emerald overlay on the blur
-            backgroundColor: emeraldBg,
-
-            // Icon: nil — let the system show the app's own icon (HIG best practice)
+            backgroundColor: bgTint,
             icon: nil,
-
-            // Title
-            title: ShieldConfiguration.Label(
-                text: "Focus for \(prayer)",
-                color: textPrimary
-            ),
-
-            // Subtitle
-            subtitle: ShieldConfiguration.Label(
-                text: "Discipline is an act of worship.",
-                color: textSecondary
-            ),
-
-            // Primary button — deep-links back to the app
-            primaryButtonLabel: ShieldConfiguration.Label(
-                text: "I am done praying",
-                color: .white
-            ),
-            primaryButtonBackgroundColor: mint,
-
-            // Secondary button — gentle dismiss
-            secondaryButtonLabel: ShieldConfiguration.Label(
-                text: "Not yet",
-                color: textSecondary
-            )
+            title: ShieldConfiguration.Label(text: title, color: textPrimary),
+            subtitle: ShieldConfiguration.Label(text: subtitle, color: textSecondary),
+            primaryButtonLabel: ShieldConfiguration.Label(text: primary, color: onAccent),
+            primaryButtonBackgroundColor: accent,
+            secondaryButtonLabel: secondary.map {
+                ShieldConfiguration.Label(text: $0, color: textSecondary)
+            }
         )
     }
 }

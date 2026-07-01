@@ -21,13 +21,28 @@ RCT_EXTERN_METHOD(syncSharedState:(NSDictionary *)payload
 RCT_EXTERN_METHOD(getSharedState:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(startMonitoring:(NSArray *)isoStarts
-                  graceSecs:(nonnull NSNumber *)graceSecs
+RCT_EXTERN_METHOD(getSelectedAppsSummary:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(scheduleDayReset:(nonnull NSNumber *)hour
+                  minute:(nonnull NSNumber *)minute
                   resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(startLockIn:(nonnull NSNumber *)durationSeconds
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(endLockIn:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(startBreak:(nonnull NSNumber *)durationSeconds
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(stopAllSchedules:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
 RCT_EXTERN_METHOD(getStorageInfo:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 @end
-
-

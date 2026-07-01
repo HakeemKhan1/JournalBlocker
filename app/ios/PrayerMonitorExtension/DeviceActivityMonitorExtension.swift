@@ -2,34 +2,31 @@
 //  DeviceActivityMonitorExtension.swift
 //  PrayerMonitorExtension
 //
-//  Created by Ali Jameel on 2025-11-01.
+//  Journal Blocker — background scheduler for the morning-gate lock model.
+//  (Re-pointed from the original prayer-window engine; see BLOCKING-PRD.md §3/§5.)
+//
+//  Activities:
+//    • day.reset       — repeats daily at dayStartTime. Re-engages the morning
+//                        gate: journaledToday=false + applyShields.
+//    • lockin.session  — one-shot window for a user-initiated focus session.
+//    • break.end       — one-shot; re-locks after a lock-in break.
 //
 
 import Foundation
 import DeviceActivity
 import ManagedSettings
 import FamilyControls
+import UserNotifications
 import os.log
 
 @available(iOSApplicationExtension 16.0, *)
 extension DeviceActivityName {
-    // Pre-Fajr reset (5 minutes before Fajr - new day starts)
-    static let preFajrReset = Self("prefajr.reset")
-    
-    // Prayer windows
-    static let prayerFajr = Self("prayer.fajr")
-    static let prayerDhuhr = Self("prayer.dhuhr")
-    static let prayerAsr = Self("prayer.asr")
-    static let prayerMaghrib = Self("prayer.maghrib")
-    static let prayerIsha = Self("prayer.isha")
+    static let dayReset = Self("day.reset")
+    static let lockInSession = Self("lockin.session")
+    static let breakEnd = Self("break.end")
 
-    static var prayerWindows: [DeviceActivityName] {
-        [.prayerFajr, .prayerDhuhr, .prayerAsr, .prayerMaghrib, .prayerIsha]
-    }
-    
-    // All monitored activities (including pre-Fajr reset)
     static var allMonitoredActivities: [DeviceActivityName] {
-        [.preFajrReset] + prayerWindows
+        [.dayReset, .lockInSession, .breakEnd]
     }
 }
 
@@ -37,119 +34,138 @@ extension DeviceActivityName {
 final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     private let appGroupId = "group.com.lockedislam.shared"
     private static let store = ManagedSettingsStore()
-    private static let logger = Logger(subsystem: "com.anonymous.lockedislam", category: "PrayerMonitorExtension")
-    
-    // Prayer order for checking completion
-    private static let prayerOrder = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    private static let logger = Logger(subsystem: "com.anonymous.lockedislam", category: "JournalMonitor")
 
     // MARK: - DeviceActivityMonitor Overrides
-    
+
     override func intervalDidStart(for activity: DeviceActivityName) {
         super.intervalDidStart(for: activity)
-        
-        // Handle pre-Fajr new day reset (5 min before Fajr)
-        if activity == .preFajrReset {
-            performNewDayReset()
-            return
-        }
-        
-        // Handle regular prayer windows - apply shields
-        guard DeviceActivityName.prayerWindows.contains(activity) else { return }
-        reapplySelection(for: activity)
-    }
-    
-    override func intervalDidEnd(for activity: DeviceActivityName) {
-        super.intervalDidEnd(for: activity)
-        
-        // Ignore pre-Fajr reset end (no action needed)
-        if activity == .preFajrReset {
-            return
-        }
-        
-        // Handle prayer window end
-        guard DeviceActivityName.prayerWindows.contains(activity) else { return }
-        
-        // Check if all required prayers are marked as prayed
-        let defaults = UserDefaults(suiteName: appGroupId)
-        let shared = defaults?.dictionary(forKey: "sharedState") as? [String: Any] ?? [:]
-        let prayedMap = shared["prayed"] as? [String: Bool] ?? [:]
-        
-        // Get required prayers up to and including this one
-        let currentPrayer = mapToPrayerId(activity: activity)
-        let allPrayed = checkAllRequiredPrayersComplete(currentPrayer: currentPrayer, prayedMap: prayedMap)
-        
-        if allPrayed {
-            // Clear shields - user has completed all required prayers
-            Self.store.clearAllSettings()
-            
-            // Update shared state
-            if var updatedShared = defaults?.dictionary(forKey: "sharedState") {
-                updatedShared["lockActive"] = false
-                defaults?.set(updatedShared, forKey: "sharedState")
-            }
+
+        switch activity {
+        case .dayReset:
+            performDayReset()
+        case .lockInSession:
+            // Focus session begins — shields on.
+            applyShieldsFromSelection(lockPhase: "lockIn", extra: ["lockInActive": true])
+        case .breakEnd:
+            // Break is over — re-lock (respect whichever phase should hold).
+            reapplyAfterBreak()
+        default:
+            break
         }
     }
 
-    // MARK: - New Day Reset (5 minutes before Fajr)
-    
-    /// Performs unconditional reset for new day:
-    /// - Clears ALL shields (regardless of current state)
-    /// - Resets ALL prayer checkboxes to unchecked
-    /// - Deletes prayed data from storage
-    private func performNewDayReset() {
+    override func intervalDidEnd(for activity: DeviceActivityName) {
+        super.intervalDidEnd(for: activity)
+
+        switch activity {
+        case .lockInSession:
+            // Focus session ended. Clear the lock-in flag; only actually unlock
+            // if the morning gate is already satisfied, otherwise the gate holds.
+            guard let defaults = UserDefaults(suiteName: appGroupId) else { return }
+            var shared = defaults.dictionary(forKey: "sharedState") ?? [:]
+            shared["lockInActive"] = false
+            let journaled = (shared["journaledToday"] as? Bool) ?? false
+            if journaled {
+                Self.store.clearAllSettings()
+                shared["lockActive"] = false
+                shared.removeValue(forKey: "lockPhase") // NSNull isn't plist-safe
+            } else {
+                // Gate still owes a journal — keep shields, revert phase to the gate.
+                shared["lockPhase"] = "morningGate"
+                shared["lockActive"] = true
+            }
+            defaults.set(shared, forKey: "sharedState")
+            defaults.synchronize()
+        default:
+            break
+        }
+    }
+
+    // MARK: - New Day Reset (fires at dayStartTime)
+
+    /// Re-engages the morning gate for a fresh day. NOTE the inversion vs. the
+    /// original prayer app: this *applies* shields (locked until journaled)
+    /// rather than clearing them.
+    private func performDayReset() {
         guard let defaults = UserDefaults(suiteName: appGroupId) else { return }
-        
-        // 1. ALWAYS clear shields (handles scenarios a and c from plan)
-        Self.store.clearAllSettings()
-        
-        // 2. ALWAYS delete/reset prayed data from storage (handles all scenarios)
-        // This clears the checkboxes when user opens the app
         var shared = defaults.dictionary(forKey: "sharedState") ?? [:]
-        
-        // Reset prayed map to all false
-        shared["prayed"] = [
-            "fajr": false,
-            "dhuhr": false,
-            "asr": false,
-            "maghrib": false,
-            "isha": false
-        ]
-        shared["lockActive"] = false
-        shared["currentPrayer"] = NSNull()
-        
-        // Update day key to new day
+
+        // A new day owes a journal again.
+        shared["journaledToday"] = false
+        shared["lockInActive"] = false
+
+        // Refill break budget if lock-in breaks are configured.
+        if let maxPasses = shared["maxBreakPasses"] as? Int {
+            shared["breakPassesRemaining"] = maxPasses
+        }
+
+        // Stamp the new day.
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         shared["dayKey"] = formatter.string(from: Date())
-        
+
+        // Engage the gate.
+        let applied = Self.reconfigureShields(with: loadSelection())
+        shared["lockActive"] = applied
+        if applied { shared["lockPhase"] = "morningGate" } else { shared.removeValue(forKey: "lockPhase") }
+
+        defaults.set(shared, forKey: "sharedState")
+        defaults.synchronize()
+
+        if applied {
+            postMorningNudge()
+        }
+    }
+
+    /// Fire a local notification inviting the user to journal (requires the app
+    /// to have been granted notification permission during onboarding).
+    private func postMorningNudge() {
+        let content = UNMutableNotificationContent()
+        content.title = "Start your day"
+        content.body = "Set your intentions to open your apps."
+        content.sound = .default
+        // Fire ~immediately (1s); the day.reset window has already started.
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: "morning.nudge", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+
+    // MARK: - Shield Application
+
+    private func applyShieldsFromSelection(lockPhase: String, extra: [String: Any] = [:]) {
+        guard let defaults = UserDefaults(suiteName: appGroupId) else { return }
+        let applied = Self.reconfigureShields(with: loadSelection())
+
+        var shared = defaults.dictionary(forKey: "sharedState") ?? [:]
+        shared["lockActive"] = applied
+        if applied { shared["lockPhase"] = lockPhase } else { shared.removeValue(forKey: "lockPhase") }
+        for (k, v) in extra { shared[k] = v }
         defaults.set(shared, forKey: "sharedState")
         defaults.synchronize()
     }
 
-    // MARK: - Shield Application
-    
-    private func reapplySelection(for activity: DeviceActivityName) {
+    private func reapplyAfterBreak() {
         guard let defaults = UserDefaults(suiteName: appGroupId) else { return }
-        
-        let selection: FamilyActivitySelection
-        
-        if let data = defaults.data(forKey: "familySelection"),
+        let shared = defaults.dictionary(forKey: "sharedState") ?? [:]
+        // If a lock-in is still active, resume it; otherwise fall back to the gate
+        // if the day still owes a journal.
+        let lockInActive = (shared["lockInActive"] as? Bool) ?? false
+        let journaled = (shared["journaledToday"] as? Bool) ?? false
+        if lockInActive {
+            applyShieldsFromSelection(lockPhase: "lockIn")
+        } else if !journaled {
+            applyShieldsFromSelection(lockPhase: "morningGate")
+        }
+    }
+
+    private func loadSelection() -> FamilyActivitySelection {
+        let defaults = UserDefaults(suiteName: appGroupId)
+        if let data = defaults?.data(forKey: "familySelection"),
            let decoded = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
-            selection = decoded
-        } else {
-            selection = FamilyActivitySelection()
+            return decoded
         }
-
-        let applied = Self.reconfigureShields(with: selection)
-
-        // Update shared state
-        var shared = defaults.dictionary(forKey: "sharedState") ?? [:]
-        shared["lockActive"] = applied
-        if let prayerId = mapToPrayerId(activity: activity) {
-            shared["currentPrayer"] = prayerId
-        }
-        defaults.set(shared, forKey: "sharedState")
-        defaults.synchronize()
+        return FamilyActivitySelection()
     }
 
     private static func reconfigureShields(with selection: FamilyActivitySelection) -> Bool {
@@ -177,36 +193,5 @@ final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         }
 
         return applied
-    }
-
-    // MARK: - Helper Functions
-    
-    private func mapToPrayerId(activity: DeviceActivityName) -> String? {
-        switch activity {
-        case .prayerFajr: return "fajr"
-        case .prayerDhuhr: return "dhuhr"
-        case .prayerAsr: return "asr"
-        case .prayerMaghrib: return "maghrib"
-        case .prayerIsha: return "isha"
-        default: return nil
-        }
-    }
-    
-    /// Check if all prayers up to and including the current prayer have been prayed
-    private func checkAllRequiredPrayersComplete(currentPrayer: String?, prayedMap: [String: Bool]) -> Bool {
-        guard let current = currentPrayer,
-              let currentIndex = Self.prayerOrder.firstIndex(of: current) else {
-            return false
-        }
-        
-        // Check all prayers up to and including current are prayed
-        for i in 0...currentIndex {
-            let prayer = Self.prayerOrder[i]
-            if prayedMap[prayer] != true {
-                return false
-            }
-        }
-        
-        return true
     }
 }

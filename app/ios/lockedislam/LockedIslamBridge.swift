@@ -5,25 +5,16 @@ import ManagedSettings
 import SwiftUI
 import os.log
 import DeviceActivity
+
 @available(iOS 16.0, *)
 extension DeviceActivityName {
-  // Pre-Fajr reset (5 minutes before Fajr - new day starts)
-  static let preFajrReset = Self("prefajr.reset")
-  
-  // Prayer windows
-  static let prayerFajr = Self("prayer.fajr")
-  static let prayerDhuhr = Self("prayer.dhuhr")
-  static let prayerAsr = Self("prayer.asr")
-  static let prayerMaghrib = Self("prayer.maghrib")
-  static let prayerIsha = Self("prayer.isha")
+  // Journal Blocker morning-gate model (see BLOCKING-PRD.md §3).
+  static let dayReset = Self("day.reset")
+  static let lockInSession = Self("lockin.session")
+  static let breakEnd = Self("break.end")
 
-  static var prayerWindows: [DeviceActivityName] {
-    [.prayerFajr, .prayerDhuhr, .prayerAsr, .prayerMaghrib, .prayerIsha]
-  }
-  
-  // All monitored activities (including pre-Fajr reset)
   static var allMonitoredActivities: [DeviceActivityName] {
-    [.preFajrReset] + prayerWindows
+    [.dayReset, .lockInSession, .breakEnd]
   }
 }
 
@@ -35,7 +26,7 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
   private let appGroupId = "group.com.lockedislam.shared"
   private static let logger = Logger(subsystem: "com.anonymous.lockedislam", category: "ScreenTime")
   private static let store = ManagedSettingsStore() // single store instance
-  
+
   // Storage monitoring constants
   private static let STORAGE_WARNING_THRESHOLD: Int64 = 800_000  // 800KB - warn when approaching 1MB
   private static let STORAGE_CRITICAL_THRESHOLD: Int64 = 950_000 // 950KB - critical level
@@ -68,7 +59,7 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
           @Environment(\.dismiss) private var dismiss
           @State private var selection: FamilyActivitySelection
           let onDone: (FamilyActivitySelection) -> Void
-          
+
           init(initialSelection: FamilyActivitySelection, onDone: @escaping (FamilyActivitySelection) -> Void) {
             _selection = State(initialValue: initialSelection)
             self.onDone = onDone
@@ -101,17 +92,14 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
         guard let root = UIApplication.shared.connectedScenes
             .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
             .first?.rootViewController else {
-          resolve(["tokens": 0])
+          resolve(["count": 0])
           return
         }
 
         let host = UIHostingController(rootView: PickerSheet(initialSelection: existingSelection) { selection in
           // Persist selection into App Group
-          if #available(iOS 16.0, *) {
-            // Store the entire selection (more reliable than piecemeal types)
-            if let data = try? JSONEncoder().encode(selection) {
-              defaults?.set(data, forKey: "familySelection")
-            }
+          if let data = try? JSONEncoder().encode(selection) {
+            defaults?.set(data, forKey: "familySelection")
           }
           let count = selection.applicationTokens.count
           // Mirror count into sharedState for JS consumers and detect active locks
@@ -122,9 +110,7 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
           let lockActive = (shared["lockActive"] as? Bool) ?? false
           if lockActive {
             DispatchQueue.main.async {
-              if #available(iOS 16.0, *) {
-                _ = Self.reconfigureShields(with: selection)
-              }
+              _ = Self.reconfigureShields(with: selection)
             }
           }
 
@@ -134,7 +120,7 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
         root.present(host, animated: true)
       }
     } else {
-      resolve(["tokens": 0])
+      resolve(["count": 0])
     }
   }
 
@@ -178,14 +164,18 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
                        resolver resolve: @escaping RCTPromiseResolveBlock,
                        rejecter reject: @escaping RCTPromiseRejectBlock) {
     let defaults = UserDefaults(suiteName: appGroupId)
-    // Filter out NSNull values before storing (UserDefaults only accepts property-list types)
-    var filtered: [String: Any] = [:]
+    // Merge into existing sharedState so background-written keys (e.g. from the
+    // monitor extension) aren't clobbered by a partial JS payload.
+    var merged = defaults?.dictionary(forKey: "sharedState") ?? [:]
     for (key, value) in payload {
-      if let strKey = key as? String, !(value is NSNull) {
-        filtered[strKey] = value
+      guard let strKey = key as? String else { continue }
+      if value is NSNull {
+        merged.removeValue(forKey: strKey)
+      } else {
+        merged[strKey] = value
       }
     }
-    defaults?.set(filtered, forKey: "sharedState")
+    defaults?.set(merged, forKey: "sharedState")
     resolve(NSNull())
   }
 
@@ -216,8 +206,6 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
       return
     }
 
-    // NOTE: Application tokens are privacy-preserving, but Apple exposes a
-    // read-only Application wrapper specifically for this use case.
     let apps: [[String: Any]] = selection.applications.compactMap { app in
       guard let name = app.localizedDisplayName else { return nil }
       return [
@@ -229,94 +217,142 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
     resolve(apps)
   }
 
-  // Schedule DeviceActivity intervals at provided ISO start times (adhān + grace)
-  // Also schedules pre-Fajr reset (5 minutes before Fajr) for new day handling
-  @objc(startMonitoring:graceSecs:resolver:rejecter:)
-  func startMonitoring(_ isoStarts: [String],
-                      graceSecs: NSNumber,
-                      resolver resolve: @escaping RCTPromiseResolveBlock,
-                      rejecter reject: @escaping RCTPromiseRejectBlock) {
-    if #available(iOS 16.0, *) {
-      let fmt = ISO8601DateFormatter()
-      let calendar = Calendar.current
-      
-      // Parse dates
-      var parsedDates: [Date] = []
-      for isoString in isoStarts {
-        if let date = fmt.date(from: isoString) {
-          parsedDates.append(date)
-        }
-      }
-      parsedDates.sort()
-      
-      // Reject with descriptive error if ALL dates failed to parse
-      guard !parsedDates.isEmpty else {
-        let errorMsg = "All \(isoStarts.count) prayer times failed to parse. Expected ISO 8601 format."
-        reject("PARSE_ERROR", errorMsg, nil)
-        return
-      }
+  // MARK: - Journal scheduling (morning gate + lock-in)
 
-      let center = DeviceActivityCenter()
+  /// Schedule the daily morning-gate re-engagement at `hour:minute`.
+  /// The monitor extension's `day.reset` handler re-applies shields and resets
+  /// `journaledToday` when this window starts.
+  @objc(scheduleDayReset:minute:resolver:rejecter:)
+  func scheduleDayReset(_ hour: NSNumber,
+                        minute: NSNumber,
+                        resolver resolve: @escaping RCTPromiseResolveBlock,
+                        rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.0, *) else { resolve(false); return }
 
-      // Remove any existing schedules to avoid duplicates (including pre-Fajr reset)
-      center.stopMonitoring(DeviceActivityName.allMonitoredActivities)
+    let center = DeviceActivityCenter()
+    center.stopMonitoring([.dayReset])
 
-      let graceSeconds = max(min(graceSecs.intValue, 15 * 60), 30)
-      var scheduledAny = false
-      let pairs = zip(DeviceActivityName.prayerWindows, parsedDates)
+    var start = DateComponents()
+    start.hour = hour.intValue
+    start.minute = minute.intValue
+    start.second = 0
 
-      // Schedule each prayer window
-      for (name, startDate) in pairs {
-        var startComponents = calendar.dateComponents([.hour, .minute], from: startDate)
-        startComponents.second = 0
+    var end = DateComponents()
+    // 1-minute window is enough to fire intervalDidStart.
+    let endMinuteTotal = hour.intValue * 60 + minute.intValue + 1
+    end.hour = (endMinuteTotal / 60) % 24
+    end.minute = endMinuteTotal % 60
+    end.second = 0
 
-        let endDate = calendar.date(byAdding: .second, value: graceSeconds, to: startDate)
-          ?? startDate.addingTimeInterval(TimeInterval(graceSeconds))
-        var endComponents = calendar.dateComponents([.hour, .minute], from: endDate)
-        endComponents.second = 0
-
-        let schedule = DeviceActivitySchedule(intervalStart: startComponents,
-                                              intervalEnd: endComponents,
-                                              repeats: true,
-                                              warningTime: nil)
-        do {
-          try center.startMonitoring(name, during: schedule)
-          scheduledAny = true
-        } catch {
-          // Silently continue - some schedules may fail
-        }
-      }
-      
-      // Schedule pre-Fajr reset (5 minutes before Fajr)
-      // This triggers new day reset: clears shields and resets prayed checkboxes
-      if let fajrDate = parsedDates.first {
-        let preFajrDate = calendar.date(byAdding: .minute, value: -5, to: fajrDate) ?? fajrDate
-        var preFajrStart = calendar.dateComponents([.hour, .minute], from: preFajrDate)
-        preFajrStart.second = 0
-        
-        // End 1 minute later (just need to trigger intervalDidStart, not maintain)
-        let preFajrEndDate = calendar.date(byAdding: .minute, value: 1, to: preFajrDate) ?? preFajrDate
-        var preFajrEnd = calendar.dateComponents([.hour, .minute], from: preFajrEndDate)
-        preFajrEnd.second = 0
-        
-        let preFajrSchedule = DeviceActivitySchedule(
-          intervalStart: preFajrStart,
-          intervalEnd: preFajrEnd,
-          repeats: true,
-          warningTime: nil
-        )
-        
-        do {
-          try center.startMonitoring(.preFajrReset, during: preFajrSchedule)
-        } catch {
-          // Silently continue
-        }
-      }
-
-      resolve(scheduledAny)
-    } else {
-      resolve(false)
+    let schedule = DeviceActivitySchedule(intervalStart: start,
+                                          intervalEnd: end,
+                                          repeats: true,
+                                          warningTime: nil)
+    do {
+      try center.startMonitoring(.dayReset, during: schedule)
+      resolve(true)
+    } catch {
+      reject("SCHEDULE_ERROR", "Failed to schedule day reset: \(error.localizedDescription)", error)
     }
+  }
+
+  /// Begin a user-initiated lock-in for `durationSeconds`. Applies shields
+  /// immediately and schedules a one-shot window whose end unlocks (subject to
+  /// the gate) via the monitor extension. Returns the ISO end time.
+  @objc(startLockIn:resolver:rejecter:)
+  func startLockIn(_ durationSeconds: NSNumber,
+                   resolver resolve: @escaping RCTPromiseResolveBlock,
+                   rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.0, *) else { resolve(NSNull()); return }
+
+    let now = Date()
+    let end = now.addingTimeInterval(durationSeconds.doubleValue)
+    let center = DeviceActivityCenter()
+    center.stopMonitoring([.lockInSession])
+
+    let cal = Calendar.current
+    var startC = cal.dateComponents([.hour, .minute], from: now)
+    startC.second = 0
+    var endC = cal.dateComponents([.hour, .minute], from: end)
+    endC.second = 0
+
+    // Apply shields right away so the lock is instant, regardless of scheduling.
+    DispatchQueue.main.async {
+      let defaults = UserDefaults(suiteName: self.appGroupId)
+      if let data = defaults?.data(forKey: "familySelection"),
+         let sel = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
+        _ = Self.reconfigureShields(with: sel)
+      }
+    }
+
+    let schedule = DeviceActivitySchedule(intervalStart: startC,
+                                          intervalEnd: endC,
+                                          repeats: false,
+                                          warningTime: nil)
+    let iso = ISO8601DateFormatter().string(from: end)
+    do {
+      try center.startMonitoring(.lockInSession, during: schedule)
+    } catch {
+      // Even if background scheduling fails, shields are already applied.
+      Self.logger.error("startLockIn scheduling failed: \(error.localizedDescription)")
+    }
+    resolve(["lockInUntil": iso])
+  }
+
+  /// End a lock-in session early. Stops the background window; the caller is
+  /// responsible for deciding whether to clear shields (gate may still hold).
+  @objc(endLockIn:rejecter:)
+  func endLockIn(_ resolve: @escaping RCTPromiseResolveBlock,
+                 rejecter reject: @escaping RCTPromiseRejectBlock) {
+    if #available(iOS 16.0, *) {
+      DeviceActivityCenter().stopMonitoring([.lockInSession])
+    }
+    resolve(NSNull())
+  }
+
+  /// Take a break inside a lock-in: clear shields now, re-lock after
+  /// `durationSeconds` via the `break.end` window.
+  @objc(startBreak:resolver:rejecter:)
+  func startBreak(_ durationSeconds: NSNumber,
+                  resolver resolve: @escaping RCTPromiseResolveBlock,
+                  rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.0, *) else { resolve(NSNull()); return }
+
+    Self.store.clearAllSettings()
+
+    let breakEndDate = Date().addingTimeInterval(durationSeconds.doubleValue)
+    let cal = Calendar.current
+    var startC = cal.dateComponents([.hour, .minute], from: breakEndDate)
+    startC.second = 0
+    let endMinuteTotal = (startC.hour ?? 0) * 60 + (startC.minute ?? 0) + 1
+    var endC = DateComponents()
+    endC.hour = (endMinuteTotal / 60) % 24
+    endC.minute = endMinuteTotal % 60
+    endC.second = 0
+
+    let center = DeviceActivityCenter()
+    center.stopMonitoring([.breakEnd])
+    let schedule = DeviceActivitySchedule(intervalStart: startC,
+                                          intervalEnd: endC,
+                                          repeats: false,
+                                          warningTime: nil)
+    let iso = ISO8601DateFormatter().string(from: breakEndDate)
+    do {
+      try center.startMonitoring(.breakEnd, during: schedule)
+    } catch {
+      Self.logger.error("startBreak scheduling failed: \(error.localizedDescription)")
+    }
+    resolve(["breakEndsAt": iso])
+  }
+
+  /// Tear down all journal schedules (used when disabling blocking entirely).
+  @objc(stopAllSchedules:rejecter:)
+  func stopAllSchedules(_ resolve: @escaping RCTPromiseResolveBlock,
+                        rejecter reject: @escaping RCTPromiseRejectBlock) {
+    if #available(iOS 16.0, *) {
+      DeviceActivityCenter().stopMonitoring(DeviceActivityName.allMonitoredActivities)
+    }
+    resolve(NSNull())
   }
 
   // MARK: - Storage Monitoring
@@ -327,8 +363,7 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
     let defaults = UserDefaults(suiteName: appGroupId)
     var totalSize: Int64 = 0
     var breakdown: [String: Int] = [:]
-    
-    // Calculate size of each key
+
     if let dict = defaults?.dictionaryRepresentation() {
       for (key, value) in dict {
         if let data = try? NSKeyedArchiver.archivedData(withRootObject: value, requiringSecureCoding: false) {
@@ -338,15 +373,14 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
         }
       }
     }
-    
-    // Determine status
+
     var status = "ok"
     if totalSize >= Self.STORAGE_CRITICAL_THRESHOLD {
       status = "critical"
     } else if totalSize >= Self.STORAGE_WARNING_THRESHOLD {
       status = "warning"
     }
-    
+
     resolve([
       "totalBytes": totalSize,
       "totalKB": Double(totalSize) / 1024.0,
@@ -355,26 +389,6 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
       "criticalThresholdKB": Double(Self.STORAGE_CRITICAL_THRESHOLD) / 1024.0,
       "breakdown": breakdown
     ])
-  }
-  
-  @objc(clearStorageCache:rejecter:)
-  func clearStorageCache(_ resolve: @escaping RCTPromiseResolveBlock,
-                         rejecter reject: @escaping RCTPromiseRejectBlock) {
-    let defaults = UserDefaults(suiteName: appGroupId)
-    
-    // Only clear non-essential data (keep familySelection and sharedState)
-    let keysToKeep = ["familySelection", "sharedState"]
-    
-    if let allKeys = defaults?.dictionaryRepresentation().keys {
-      for key in allKeys {
-        if !keysToKeep.contains(key) {
-          defaults?.removeObject(forKey: key)
-        }
-      }
-    }
-    
-    defaults?.synchronize()
-    resolve(["cleared": true])
   }
 
   @available(iOS 16.0, *)
@@ -404,10 +418,9 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
     }
 
     if applied {
-      Self.logger.info("Shields applied — DeenShieldShieldConfig extension will provide custom UI")
+      Self.logger.info("Shields applied — DeenShieldShieldConfig extension provides custom UI")
     }
 
     return applied
   }
 }
-

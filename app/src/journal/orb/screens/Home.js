@@ -61,7 +61,20 @@ export default function Home({ v, M }) {
         </View>
 
         {/* blocked / unlocked card */}
-        {v.journaledToday ? (
+        {v.lockInActive ? (
+          <View style={{ backgroundColor: 'rgba(245,169,127,0.09)', borderWidth: 1, borderColor: C.accBorder, borderRadius: 18, padding: 15, gap: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
+              <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(245,169,127,0.16)', alignItems: 'center', justifyContent: 'center' }}><Lock /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: '600', fontSize: 15, color: C.warm, fontFamily: SANS }}>You're locked in</Text>
+                <Text style={{ fontSize: 13, color: C.dim, marginTop: 1, fontFamily: SANS }}>{v.lockInLabel || 'Focused session in progress'}</Text>
+              </View>
+            </View>
+            <Pressable onPress={M.endLockInSession} style={{ alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: C.b10, backgroundColor: C.s05 }}>
+              <Text style={{ color: C.soft, fontSize: 13, fontFamily: SANS }}>End early</Text>
+            </Pressable>
+          </View>
+        ) : v.journaledToday ? (
           <View style={{ backgroundColor: 'rgba(123,191,158,0.09)', borderWidth: 1, borderColor: 'rgba(123,191,158,0.26)', borderRadius: 18, padding: 15, gap: 13 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
               <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(123,191,158,0.16)', alignItems: 'center', justifyContent: 'center' }}><CheckSmall /></View>
@@ -70,7 +83,9 @@ export default function Home({ v, M }) {
                 <Text style={{ fontSize: 13, color: C.dim, marginTop: 1, fontFamily: SANS }}>Unlocked for the rest of today</Text>
               </View>
             </View>
-            <AppsRow apps={v.blockedApps} />
+            <Pressable onPress={() => M.startLockInSession(2)} style={{ alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: C.accBorder, backgroundColor: 'rgba(245,169,127,0.10)' }}>
+              <Text style={{ color: C.warm, fontSize: 13, fontWeight: '600', fontFamily: SANS }}>Lock in for 2h of focus</Text>
+            </Pressable>
           </View>
         ) : (
           <Pressable onPress={() => M.go('shield')} style={{ backgroundColor: 'rgba(245,169,127,0.09)', borderWidth: 1, borderColor: C.accBorder, borderRadius: 18, padding: 15, gap: 13 }}>

@@ -4,7 +4,10 @@
  * (mocked) interactions — orb launch, voice typewriter, dictation, calendar,
  * onboarding funnel — and derives a flat `vals` object the screens render from.
  */
-import { useRef, useState, useMemo } from 'react';
+import { useRef, useState, useMemo, useEffect } from 'react';
+import { Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Bridge from '../../native/LockedIslamBridge';
 import {
   ANSWERS, CAT_DESC, RECOMMENDED, PALETTE, SHAPES, THEME_META,
   FEELING_DEFS, JOURNAL_ENTRIES, INSIGHTS_DATA, HABITS,
@@ -13,6 +16,37 @@ import { C } from './theme';
 
 const ACC = '#f5a97f';
 const TODAY_N = 17;
+
+/* ---------- real blocking: persistence + helpers (BLOCKING-PRD.md §4) ---- */
+const K = {
+  journaled: 'jb:journaledToday', dayKey: 'jb:dayKey', dayStart: 'jb:dayStartTime',
+  blocked: 'jb:blockedCount', configured: 'jb:configured', lockUntil: 'jb:lockInUntil',
+  streak: 'jb:streak', longest: 'jb:longest',
+};
+const MIN_JOURNAL_WORDS = 12;
+const pad2 = (n) => String(n).padStart(2, '0');
+const HM = (s) => {
+  const [h, m] = String(s || '05:00').split(':').map((n) => parseInt(n, 10) || 0);
+  return { h, m };
+};
+const wordCount = (t) => (t && t.trim() ? t.trim().split(/\s+/).length : 0);
+function lockInRemainingLabel(active, until) {
+  if (!active || !until) return null;
+  const secs = Math.floor((new Date(until).getTime() - Date.now()) / 1000);
+  if (secs <= 0) return null;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m left` : `${m}m left`;
+}
+/** The date-key of the current "journal day", whose boundary is dayStartTime. */
+function gateDayKey(dayStartTime, now = new Date()) {
+  const { h, m } = HM(dayStartTime);
+  const boundary = new Date(now);
+  boundary.setHours(h, m, 0, 0);
+  const d = new Date(now);
+  if (now < boundary) d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
 
 /** RN style for a journal's colour/shape glyph at a given pixel size. */
 export function iconStyle(color, shape, size = 11) {
@@ -34,6 +68,9 @@ const initial = (startScreen) => ({
   launching: false,
   attention: 'social', desire: 'calm',
   goal: 7, streak: 6, longest: 12, appsBlocked: 3, freePasses: 2,
+  // real blocking state (hydrated from AsyncStorage + native sharedState)
+  hydrated: false, configured: false, dayStartTime: '05:00', blockedCount: 3,
+  lockInActive: false, lockInUntil: null,
   feelings: [],
   openJournal: null, openEntry: null, showIconEditor: false, journalStyles: {},
   calYear: 2026, calMonth: 5, showCalPicker: false,
@@ -69,6 +106,169 @@ export function useController(props = {}) {
     return p == null ? prev : { ...prev, ...p };
   });
 
+  // Always-fresh snapshot of state for async callbacks (avoids stale closures).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  /* ---------- real blocking: hydrate on mount ---------- */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const pairs = await AsyncStorage.multiGet(Object.values(K));
+        const map = Object.fromEntries(pairs);
+        const dayStartTime = map[K.dayStart] || '05:00';
+        const todayKey = gateDayKey(dayStartTime);
+        const configured = map[K.configured] === 'true';
+        const blockedCount = parseInt(map[K.blocked], 10) || 0;
+        const streak = parseInt(map[K.streak], 10);
+        const longest = parseInt(map[K.longest], 10);
+
+        // New journal-day since last open → the gate owes a journal again.
+        let journaledToday = map[K.journaled] === 'true';
+        const rolledOver = map[K.dayKey] !== todayKey;
+        if (rolledOver) journaledToday = false;
+
+        const lockUntilRaw = map[K.lockUntil];
+        const lockInUntil = lockUntilRaw && new Date(lockUntilRaw) > new Date() ? lockUntilRaw : null;
+
+        // Reconcile with native shared state (extension may have run day.reset).
+        let native = null;
+        try { native = await Bridge.getSharedState(); } catch {}
+        if (native && typeof native.journaledToday === 'boolean' && native.dayKey === todayKey) {
+          journaledToday = native.journaledToday;
+        }
+
+        if (!alive) return;
+        setState({
+          hydrated: true, dayStartTime, configured, blockedCount, journaledToday,
+          lockInActive: !!lockInUntil, lockInUntil,
+          ...(Number.isFinite(streak) ? { streak } : {}),
+          ...(Number.isFinite(longest) ? { longest } : {}),
+          screen: configured ? 'home' : (props.startScreen || 'onboarding'),
+        });
+
+        if (rolledOver) {
+          await AsyncStorage.multiSet([[K.dayKey, todayKey], [K.journaled, journaledToday ? 'true' : 'false']]);
+        }
+        if (configured) {
+          const { h, m } = HM(dayStartTime);
+          Bridge.scheduleDayReset(h, m);
+        }
+      } catch (e) {
+        if (alive) setState({ hydrated: true });
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  /* ---------- real blocking: apply/clear shields on lock-state change (§4) ---------- */
+  const shieldTimer = useRef(null);
+  const lastLock = useRef(null);
+  useEffect(() => {
+    if (!state.hydrated || !state.configured) return undefined;
+
+    const now = new Date();
+    const gateLocked = !state.journaledToday;
+    const lockInLocked = !!(state.lockInActive && state.lockInUntil && new Date(state.lockInUntil) > now);
+    const lockActive = gateLocked || lockInLocked;
+    const lockPhase = gateLocked ? 'morningGate' : (lockInLocked ? 'lockIn' : null);
+
+    const payload = {
+      journaledToday: !!state.journaledToday,
+      lockActive,
+      lockPhase, // null → native drops the key; shield UI defaults to gate copy
+      lockInActive: lockInLocked,
+      lockInUntil: lockInLocked ? state.lockInUntil : null,
+      dayKey: gateDayKey(state.dayStartTime),
+      dayStartTime: state.dayStartTime,
+      selectedAppsCount: state.blockedCount,
+    };
+
+    if (shieldTimer.current) clearTimeout(shieldTimer.current);
+
+    // Skip redundant shield ops, but still push state to the App Group.
+    if (lastLock.current === lockActive) {
+      Bridge.syncSharedState(payload);
+      return undefined;
+    }
+
+    shieldTimer.current = setTimeout(() => {
+      lastLock.current = lockActive;
+      if (lockActive) {
+        Bridge.authorizeScreenTime().finally(() => { Bridge.applyShields(); });
+      } else {
+        Bridge.clearShields();
+      }
+      Bridge.syncSharedState(payload);
+    }, 300);
+
+    return () => { if (shieldTimer.current) clearTimeout(shieldTimer.current); };
+  }, [state.hydrated, state.configured, state.journaledToday, state.lockInActive, state.lockInUntil, state.dayStartTime, state.blockedCount]);
+
+  /* ---------- real blocking: actions ---------- */
+  const persistJournaled = (val) => {
+    const dayKey = gateDayKey(stateRef.current.dayStartTime);
+    AsyncStorage.multiSet([[K.journaled, val ? 'true' : 'false'], [K.dayKey, dayKey]]);
+  };
+  // Mark the day journaled (unlocks the gate via the effect above) + streak bump.
+  const completeJournal = () => {
+    setState((s) => {
+      if (s.journaledToday) return null;
+      const streak = s.streak + 1;
+      const longest = Math.max(s.longest, streak);
+      const hit = streak >= s.goal;
+      AsyncStorage.multiSet([[K.streak, String(streak)], [K.longest, String(longest)]]);
+      return { journaledToday: true, streak, longest, showCelebration: hit };
+    });
+    persistJournaled(true);
+  };
+  // Authorize Screen Time + present the real system app picker (onboarding/settings).
+  const configureBlockedApps = async () => {
+    try {
+      await Bridge.authorizeScreenTime();
+      const r = await Bridge.pickApps();
+      const count = r && typeof r.count === 'number' ? r.count : 0;
+      const configured = count > 0;
+      setState({ blockedCount: count, configured });
+      await AsyncStorage.multiSet([[K.blocked, String(count)], [K.configured, configured ? 'true' : 'false']]);
+      const { h, m } = HM(stateRef.current.dayStartTime);
+      Bridge.scheduleDayReset(h, m);
+      return count;
+    } catch (e) {
+      return 0;
+    }
+  };
+  const setDayStartTime = (hhmm) => {
+    setState({ dayStartTime: hhmm });
+    AsyncStorage.setItem(K.dayStart, hhmm);
+    const { h, m } = HM(hhmm);
+    Bridge.scheduleDayReset(h, m);
+  };
+  const startLockInSession = async (hours) => {
+    const secs = Math.max(60, Math.round(hours * 3600));
+    let until = null;
+    try {
+      const r = await Bridge.startLockIn(secs);
+      until = r && r.lockInUntil ? r.lockInUntil : null;
+    } catch (e) {}
+    if (!until) until = new Date(Date.now() + secs * 1000).toISOString();
+    setState({ lockInActive: true, lockInUntil: until, screen: 'home' });
+    AsyncStorage.setItem(K.lockUntil, until);
+    // Foreground expiry: flip state when the session ends while the app is open.
+    // (The native lockin.session window handles the background case.)
+    clearTimeout(T.lockIn);
+    T.lockIn = setTimeout(() => {
+      setState({ lockInActive: false, lockInUntil: null });
+      AsyncStorage.removeItem(K.lockUntil);
+    }, secs * 1000);
+  };
+  const endLockInSession = async () => {
+    try { await Bridge.endLockIn(); } catch (e) {}
+    setState({ lockInActive: false, lockInUntil: null });
+    AsyncStorage.removeItem(K.lockUntil);
+  };
+
   /* ---------- derived helpers ---------- */
   const enabledCount = (qs) => qs.filter((q) => q.on && q.text.trim()).length;
   const clampAsk = (qs, n) => Math.max(1, Math.min(n, Math.max(1, enabledCount(qs))));
@@ -102,7 +302,11 @@ export function useController(props = {}) {
     return { onboardStep: next };
   });
   const prevOnboard = () => setState((s) => ({ onboardStep: Math.max(s.onboardStep - 1, 0) }));
-  const finishOnboard = () => { clearInterval(T.rp); setState({ screen: 'home', onboardStep: 0 }); };
+  const finishOnboard = () => {
+    clearInterval(T.rp);
+    // End onboarding by having the user pick real apps to block via the system picker.
+    configureBlockedApps().finally(() => setState({ screen: 'home', onboardStep: 0 }));
+  };
   const setPhone = (n) => setState({ interrupts: Math.max(2, Math.min(40, Math.round(n))), interruptUnknown: false });
   const phoneStep = (d) => setState((s) => ({ interrupts: Math.max(2, Math.min(40, s.interrupts + d)), interruptUnknown: false }));
   const dontKnowPhone = () => { setPhone(8); setState((s) => ({ interruptUnknown: true, onboardStep: Math.min(s.onboardStep + 1, 8) })); };
@@ -140,12 +344,15 @@ export function useController(props = {}) {
   };
   const retake = () => { const i = state.vStep; setState((s) => { const t = s.vTranscript.slice(); t[i] = ''; return { vTranscript: t, vPhase: 'ready' }; }); };
   const nextQuestion = () => setState((s) => ({ vStep: Math.min(s.vStep + 1, s.sessionQs.length - 1), vPhase: 'ready' }));
-  const completeAndHome = () => setState((s) => {
-    if (s.journaledToday) return { screen: 'home', sessionSuccess: false, appsUnlocked: false, composeSaved: false };
-    const hit = (s.streak + 1) >= s.goal;
-    if (hit) { clearTimeout(T.t2); T.t2 = setTimeout(() => setState({ showCelebration: false }), 5000); }
-    return { streak: s.streak + 1, longest: Math.max(s.longest, s.streak + 1), screen: 'home', sessionSuccess: false, appsUnlocked: false, composeSaved: false, journaledToday: true, showCelebration: hit };
-  });
+  const completeAndHome = () => {
+    const alreadyDone = stateRef.current.journaledToday;
+    if (!alreadyDone) {
+      completeJournal(); // sets journaledToday (→ effect clears shields), streak, celebration
+      const willHit = (stateRef.current.streak + 1) >= stateRef.current.goal;
+      if (willHit) { clearTimeout(T.t2); T.t2 = setTimeout(() => setState({ showCelebration: false }), 5000); }
+    }
+    setState({ screen: 'home', sessionSuccess: false, appsUnlocked: false, composeSaved: false });
+  };
   const finishSession = () => {
     setState({ sessionSuccess: true });
     clearTimeout(T.t1);
@@ -196,15 +403,26 @@ export function useController(props = {}) {
   };
   const saveCompose = () => {
     clearInterval(T.dic);
+    const s = stateRef.current;
+    // Completion check (§7): require plausible engagement before the day unlocks.
+    if (!s.journaledToday) {
+      const words = wordCount(s.composeBody) + wordCount(s.composeTitle);
+      if (words < MIN_JOURNAL_WORDS) {
+        Alert.alert('A little more?', "Short one today — a few more words and your day opens up. Want to add anything?");
+        return;
+      }
+    }
     setState({ composeSaved: true, composeDictating: false, appsUnlocked: false });
     clearTimeout(T.cs);
-    if (state.journaledToday) T.cs = setTimeout(() => completeAndHome(), 1300);
+    if (s.journaledToday) T.cs = setTimeout(() => completeAndHome(), 1300);
     else T.cs = setTimeout(() => setState({ appsUnlocked: true }), 1200);
   };
   const closeCompose = () => { clearInterval(T.dic); setState({ screen: 'home', composeDictating: false }); };
 
   const M = {
     go, setState,
+    // real blocking
+    configureBlockedApps, setDayStartTime, startLockInSession, endLockInSession, completeJournal,
     nextOnboard, prevOnboard, finishOnboard, startReport, setPhone, phoneStep, dontKnowPhone,
     launchOrb, startVoice, record, stopRecord, retake, nextQuestion, finishSession, completeAndHome, dismissCeleb, setAsk,
     toggleFeeling, goFeelings,
@@ -323,9 +541,13 @@ function derive(s, M, h) {
     onSkip: () => M.go('home'),
 
     /* home */
-    streak: s.streak, longest: s.longest, appsBlocked: s.appsBlocked, goal: s.goal,
+    streak: s.streak, longest: s.longest, appsBlocked: s.configured ? s.blockedCount : s.appsBlocked, goal: s.goal,
     journaledToday: s.journaledToday, launching: s.launching, showCelebration: s.showCelebration,
     blockedApps: ['Ig', 'Tk', 'Yt'], unlockedApps: ['Ig', 'Tk', 'Yt'],
+    // real blocking view-state
+    configured: s.configured, dayStartTime: s.dayStartTime,
+    lockInActive: s.lockInActive, lockInUntil: s.lockInUntil,
+    lockInLabel: lockInRemainingLabel(s.lockInActive, s.lockInUntil),
 
     /* voice */
     vStep: s.vStep, vNum: s.vStep + 1, vLabel: (s.vStep + 1) + ' of ' + s.sessionQs.length,

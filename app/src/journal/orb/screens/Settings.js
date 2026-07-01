@@ -1,8 +1,23 @@
 import React from 'react';
-import { View, Text, Pressable, TextInput } from 'react-native';
+import { View, Text, Pressable, TextInput, Alert, Platform } from 'react-native';
 import { C, SANS, SERIF } from '../theme';
 import { Toggle } from '../ui';
 import { Scroll, Section, Card } from './kit';
+
+function editDayStart(current, onSet) {
+  if (Platform.OS === 'ios' && Alert.prompt) {
+    Alert.prompt(
+      'Day starts at',
+      'When the morning gate re-engages each day (24h, e.g. 05:00).',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: (val) => { if (val && /^\d{1,2}:\d{2}$/.test(val.trim())) onSet(val.trim()); } },
+      ],
+      'plain-text',
+      current,
+    );
+  }
+}
 
 const divider = { borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' };
 
@@ -60,9 +75,13 @@ export default function Settings({ v, M }) {
 
       <Section>Blocking</Section>
       <Card style={{ overflow: 'hidden' }}>
-        <NavRow label="Blocked apps & categories" value="3 categories ›" onPress={() => M.go('appselect')} />
-        <NavRow label="Schedule" value="Always on" />
-        <NavRow label="Unlock rule" value={v.unlockRuleText} last />
+        <NavRow
+          label="Blocked apps"
+          value={`${v.configured ? v.appsBlocked : 0} apps ›`}
+          onPress={M.configureBlockedApps}
+        />
+        <NavRow label="Day starts at" value={`${v.dayStartTime} ›`} onPress={() => editDayStart(v.dayStartTime, M.setDayStartTime)} />
+        <NavRow label="Unlock rule" value="Journal to open the day" last />
       </Card>
 
       <Section>Escape hatch</Section>
