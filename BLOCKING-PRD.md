@@ -1,64 +1,64 @@
 # Product & Engineering PRD / Build Prompt
 
-> **Purpose:** Convert the existing app (real prayer-blocking engine + mocked journal prototype) into the journaling product we scoped. This is written to sit alongside the existing **Blocking & Unblocking Logic** reference and reuse its terminology.
+> **Purpose:** Convert the existing app (real prayer-blocking engine + mocked journal prototype) into the journaling product we scoped. Written to sit alongside the existing **Blocking & Unblocking Logic** reference and reuse its terminology.
 >
-> **Status:** Target spec, 2026-06-30.
+> **Status:** Target spec, 2026-07-01.
 >
-> **TL;DR:** Do **not** rebuild the blocking engine. Re-point the working DeviceActivity / ManagedSettings / App-Group engine (ref doc §1–4) away from the prayer trigger and onto a journaling trigger, and wire the journal UI (currently mocked, ref doc §5) to real `applyShields()` / `clearShields()` calls. The product change is a new lock model with two phases and a voice reflection as the unlock task.
+> **TL;DR:** Do **not** rebuild the blocking engine. Re-point the working DeviceActivity / ManagedSettings / App-Group engine (ref doc §1–4) away from the prayer trigger and onto a **morning-journal** trigger, and wire the journal UI (currently mocked, ref doc §5) to real `applyShields()` / `clearShields()` calls. The product is a **mandatory morning intention-journal** that unlocks the phone, plus an optional, user-initiated **"lock in"** focus mode.
 
 ---
 
 ## 0. Product summary (the one-paragraph pitch)
 
-The app is a **shutdown ritual for your day**. Distraction apps are locked, and the only key that reopens your evening is a **60–120 second spoken reflection**. Voice is the point: it makes journaling fast enough to survive as a lock-task, where typing never could. The hero promise is **closure** — "close every day with intention." An optional daytime focus block is a supporting mode, not the headline.
+The app is a **morning launch ritual**. On waking, distraction apps are locked, and the only key that opens the day is a **60–120 second spoken morning journal** — thinking through the day ahead and what you want to accomplish. Doing it unlocks your apps for the day. If you want to go further, you can **"lock in"**: a voluntary focus session that re-blocks distractions so you can do deep work. Voice is the point — it makes journaling fast enough to survive as a lock-task, where typing never could.
 
-### What is changing vs. today's build
+**Target user:** people who want more discipline and to be more successful, who've heard journaling helps but never stuck with it. Aspirational self-improvers, not committed journalers. The value prop is **enforcement** — the app makes the habit happen, then rewards it with a clear, focused day.
 
-- The lock trigger changes from **prayer due & unchecked** → **hasn't reflected today**.
-- One prayer-shaped mechanic becomes **two phases**: an optional daytime **Focus** block and a core evening **Closure** gate that only a reflection unlocks.
-- The journal UI's mocked blocking (ref §5) gets wired to the real bridge (ref §2).
-- The compose flow becomes **voice-first** with adaptive prompts and a completion check.
+**Hero promise:** "Start every day with intention. Earn your day."
+
+**Tone:** discipline / self-improvement (not calm-wellness). Closer to a hardcore focus tool than to Headspace.
+
+### What is changing vs. the previous (evening) draft
+
+- The gate moves from evening reflection to a **mandatory morning intention journal**.
+- The journal content becomes **intention/planning** ("what do I want today to be"), not reflection on a day that hasn't happened.
+- The two-phase Focus/Closure model is replaced by: (A) a mandatory morning gate, and (B) an optional, user-triggered lock-in session.
+- **No to-do list / task gate.** Journaling alone unlocks the day. (Removed: the weak "check 3 boxes to unlock" mechanic.)
 
 ### What is staying the same (do not touch)
 
-- The entire native engine: FamilyControls / ManagedSettings / DeviceActivity, the two extensions, the App Group transport, and the `LockedIslamBridge` methods (ref §1–3).
+- The entire native engine: FamilyControls / ManagedSettings / DeviceActivity, both extensions, the App Group transport, and the `LockedIslamBridge` methods (ref §1–3).
 - The two-lock-paths architecture (foreground effect + background extension kept in sync through App-Group `sharedState`).
-- Identifiers (`group.com.lockedislam.shared`, `prayer.*` activity names, "DeenShield" strings). Keep these as-is for now — they're user-invisible, and renaming the App Group touches entitlements/provisioning. Ship the product first; rename in a later pass.
-- User-facing copy uses the product's brand name (TBD — not yet decided) only.
+- Identifiers (`group.com.lockedislam.shared`, `prayer.*` activity names, "DeenShield" strings). Keep as-is for now — user-invisible, and renaming the App Group touches entitlements/provisioning. User-facing copy uses the product's brand name (TBD — not yet decided) only.
 
 ---
 
-## 1. The new lock model (core logic change)
+## 1. The lock model (core logic)
 
-Today: lock = a due prayer is unchecked. Replace with a **two-phase daily model**:
+Two independent mechanisms. One is mandatory and gates the day; the other is opt-in.
 
-### Phase A — Focus block (OPTIONAL, daytime, time-driven)
+### Phase A — Morning Gate (MANDATORY, the core mechanic)
 
-- If the user enables Focus mode, distraction apps are shielded during `workStart`–`workEnd` (default 09:00–17:00, user-editable).
-- **Not task-gated** — this is pure time-window shielding. It auto-locks at `workStart` and hands off to Phase B at `workEnd`.
-- **Break budget:** the user gets `maxBreakPasses` passes/day (default 3), each worth `breakMinutes` (default 15). Spending a pass temporarily clears shields, then re-applies. This is the "friction, not punishment" escape hatch (ref §6, currently UI-only).
+- At day start, distraction apps are shielded by default and stay shielded until the user completes the morning journal (passes the completion check, §7).
+- Completing the journal → `journaledToday = true` → unlock for the rest of the day.
+- **No hard deadline / no guillotine.** The user stays locked until they journal — whenever that is. Journal at 7am → full free day ahead; journal at 2pm → you've already spent your morning locked. The clock is the consequence, not an artificial all-day punishment. This is deliberate: it keeps real teeth (you can't touch your apps until you do it) without the "one rushed morning bricks my whole day" failure that drives uninstalls.
+- **Utilities are never shielded** (calls, maps, messages, work) — a locked morning never means "can't function."
 
-### Phase B — Closure gate (CORE, evening, task-driven)
+### Phase B — Lock In (OPTIONAL, user-initiated focus session)
 
-- Starts at `reflectFromTime` (default = `workEnd`; if Focus mode is off, this is a standalone evening time, e.g. 21:00).
-- From `reflectFromTime` until `journaledToday == true`, distraction apps stay shielded.
-- Saving a reflection that passes the completion check → `journaledToday = true` → unlock for the rest of the night.
-- At day rollover, `journaledToday` resets to false and apps are free again until the next `reflectFromTime`. An unfinished day is not punished into the next morning.
+- A button the user taps to voluntarily re-block distraction apps for a chosen duration (a set number of hours, or "for the rest of the day") to do focused work.
+- Surfaced as a choice at the end of the morning journal ("Unlock my day" vs. "Lock in for the day") and available any time from the home screen afterward.
+- Optional break allowance inside a lock-in session (e.g. N short breaks) as a "friction, not punishment" escape hatch — see §11 open decision.
 
-### How the phases combine
+### How they combine
 
-- **Focus ON:** windows are contiguous → one continuous lock from `workStart`, flipping at `workEnd` from auto/break-budgeted (Phase A) to reflect-to-unlock (Phase B). This is the "structured day" experience.
-- **Focus OFF:** only Phase B exists → a clean evening journaling gate. This is the default hero experience and must work perfectly on its own.
+- **Default day:** locked on wake → journal → unlocked all day. Simple.
+- **Power day:** locked on wake → journal → choose Lock In → blocked again for focused work until the session ends or the user ends it (subject to break allowance).
+- The two never fight: Phase A is "locked until journaled," Phase B is "locked because I chose to." Either can hold the shield; releasing requires the relevant condition.
 
-### Important edge behaviors (specify these explicitly)
+**Mental model** (replaces ref §4's):
 
-- **Journaling early:** if the user reflects before `reflectFromTime`, set `journaledToday = true` immediately. When the Closure window starts, it must **no-op** (see §3) rather than re-locking. Note: journaling early does **not** lift an active Focus block — Phase A is time-based and runs its course.
-- **Never shield utilities.** Blocked set is user-chosen via the real picker, but onboarding copy steers toward social/entertainment and away from calls/maps/messages/work.
-- **Rollover with no entry:** apps simply unlock at reset; no carry-over penalty.
-
-**New mental model** (replaces ref §4's):
-
-> Focus lock = "it's work hours and Focus mode is on." Closure lock = "the day isn't closed yet." The obligation is **reflecting**, and the check-off is **saving a spoken entry**.
+> Morning-gate lock = "the day isn't started yet — I haven't set my intentions." Lock-in = "I've chosen to focus." The obligation is **journaling**; the check-off is **saving a spoken morning entry**.
 
 ---
 
@@ -68,17 +68,16 @@ Keep the App Group and transport exactly as-is (ref §1). Remap the keys the ext
 
 | Old (prayer) | New (journal) | Notes |
 |---|---|---|
-| `prayed: {fajr:…}` | `journaledToday: bool` | Set true only after completion check passes. |
-| `currentPrayer` | `lockPhase: 'focus' \| 'closure' \| null` | Which phase is active. |
+| `prayed: {fajr:…}` | `journaledToday: bool` | Set true only after completion check passes. Unlocks the day. |
+| `currentPrayer` | `lockPhase: 'morningGate' \| 'lockIn' \| null` | Which mechanism is holding the shield. |
 | `lockActive` | `lockActive` | Unchanged. |
 | `dayKey` | `dayKey` | Unchanged. |
 | `selectedAppsCount` | `selectedAppsCount` | Unchanged. |
-| — | `focusModeEnabled: bool` | New. |
-| — | `workStart` / `workEnd` / `reflectFromTime` | New (HH:mm strings). |
-| — | `breakPassesRemaining: int` / `maxBreakPasses` / `breakMinutes` | New. |
-| — | `breakActiveUntil: iso \| null` | Non-null while a break is running. |
+| — | `dayStartTime` | HH:mm the morning gate engages (default 05:00). |
+| — | `lockInActive: bool` / `lockInUntil: iso \| null` | State of an optional focus session. |
+| — | `breakPassesRemaining` / `maxBreakPasses` / `breakMinutes` | Only if lock-in breaks are shipped (§11). |
 
-**Do NOT store journal content in `sharedState`.** The App-Group UserDefaults ~1MB cap (ref §2, storage monitor) is real. Only booleans/counters/times live there. Transcripts and audio live in the app's own encrypted store (§8).
+**Do NOT store journal content in `sharedState`.** The App-Group UserDefaults ~1MB cap (ref §2) is real. Only booleans/counters/times live there. Transcripts/audio live in the app's own encrypted store (§8).
 
 ---
 
@@ -88,14 +87,13 @@ Replace the 5 prayer windows + `prefajr.reset` (ref §3) with:
 
 | Activity name | Window | `intervalDidStart` | `intervalDidEnd` |
 |---|---|---|---|
-| `focus.block` (only if Focus ON) | `workStart`→`workEnd` | `applyShields`; `lockPhase='focus'` | Do not clear — hand off to closure. |
-| `closure.gate` | `reflectFromTime`→pre-rollover | If `!journaledToday`: `applyShields`; `lockPhase='closure'`; fire "Close your day" local notification. Else no-op. | If `journaledToday` stays false to rollover, reset handles the unlock. |
-| `break.end` (dynamic, one-shot) | `now+breakMinutes` | `applyShields` (re-lock after a break); clear `breakActiveUntil`. | — |
-| `day.reset` | pre-rollover, 1 min | `clearAllSettings`; `journaledToday=false`; `breakPassesRemaining=maxBreakPasses`; new `dayKey`; `lockPhase=null`. | — |
+| `day.reset` | at `dayStartTime`, 1 min | `journaledToday=false`; `applyShields` (gate engages); `lockPhase='morningGate'`; reset break passes; new `dayKey`; fire "Set your intentions to start your day" notification. | — |
+| `lockin.session` (dynamic, user-initiated) | `now` → chosen end | `applyShields`; `lockInActive=true`; `lockPhase='lockIn'`. | `clearShields` (if morning gate already satisfied); `lockInActive=false`. |
+| `break.end` (dynamic, optional) | `now+breakMinutes` | `applyShields` (re-lock after a lock-in break). | — |
 
-- Reuse the existing "clear all schedules first, then register" pattern and the `reconfigureShields` helper verbatim.
-- `break.end` is scheduled on demand when a pass is spent (see §6 Shield screen).
-- Keep grace/clamp plumbing; it's harmless.
+- Note the **key inversion vs. the prayer app**: `day.reset` now `applyShields` instead of clearing — a new day starts locked until journaled.
+- The morning gate itself needs no repeating window beyond `day.reset` engaging it; the unlock happens on journal-save via the foreground effect (§4).
+- Reuse the "clear all schedules first, then register" pattern and the `reconfigureShields` helper verbatim.
 
 ---
 
@@ -104,139 +102,142 @@ Replace the 5 prayer windows + `prefajr.reset` (ref §3) with:
 In the journal equivalent of `TodayChecklistScreen`'s effect, derive:
 
 ```
-inFocus    = focusModeEnabled && now ∈ [workStart, workEnd) && !breakActive
-inClosure  = now ∈ [reflectFromTime, rollover) && !journaledToday
-lockActive = inFocus || inClosure
-lockPhase  = inFocus ? 'focus' : inClosure ? 'closure' : null
+gateLocked   = !journaledToday && now >= dayStartTime
+lockInLocked = lockInActive && now < lockInUntil && !breakActive
+lockActive   = gateLocked || lockInLocked
+lockPhase    = gateLocked ? 'morningGate' : lockInLocked ? 'lockIn' : null
 ```
 
 - lock → `authorizeScreenTime().finally(applyShields)`; unlock → `clearShields()`.
 - Then `syncSharedStateWithRetry({...new keys})`.
-- Preserve the 300ms debounce, the `lastShieldStateRef` skip, and the retry/alert-after-3 behavior. These exist to tame Screen-Time races — keep equivalents (ref §"sharp edges").
+- Preserve the 300ms debounce, the `lastShieldStateRef` skip, and the retry/alert-after-3 behavior (Screen-Time race protection — ref §"sharp edges").
 
 ---
 
 ## 5. Extension changes
 
-- **`DeviceActivityMonitorExtension`:** swap prayer callbacks for the §3 table. The unlock decision is now simply `journaledToday == true` (replacing `checkAllRequiredPrayersComplete`). Keep the App-Group read/write shape.
+- **`DeviceActivityMonitorExtension`:** swap prayer callbacks for the §3 table. The morning unlock decision is simply `journaledToday == true` (replacing `checkAllRequiredPrayersComplete`). Keep the App-Group read/write shape.
 - **`ShieldConfigurationExtension`:** rewrite the block-screen copy per phase:
-  - **Focus:** "Focused until {workEnd}. {breakPassesRemaining} breaks left." + a "Take a break" affordance if passes remain.
-  - **Closure:** "One reflection opens your evening." + a "Reflect" affordance that deep-links into the voice flow.
+  - **Morning gate:** "Start your day. One quick journal opens your apps." + a "Journal" button that deep-links into the voice flow.
+  - **Lock-in:** "You're locked in. {timeRemaining} left." + a break affordance if breaks ship.
 
 ---
 
-## 6. User flow & screens (fine-tuning the prototype)
+## 6. User flow & screens
 
 Reuse the `OrbApp` screens (ref §5); wire them to the real bridge and add voice.
 
-### Onboarding (new, replaces mock `cats` toggles)
+### Onboarding (replaces mock `cats` toggles)
 
-- Value-prop screen ("Close your day with intention").
-- `authorizeScreenTime()` → `pickApps()` (real `FamilyActivityPicker`, not category booleans). Steer toward social/entertainment.
-- Set schedule: `reflectFromTime` (required); Focus mode toggle → if on, `workStart` / `workEnd` + break budget.
-- Notification permission (for the Closure nudge).
+- Value-prop screen ("Start every day with intention").
+- `authorizeScreenTime()` → `pickApps()` (real `FamilyActivityPicker`, not category booleans). Steer toward social/entertainment; away from utilities.
+- Set `dayStartTime` (when the gate engages each morning).
+- Notification permission (for the morning nudge).
 
-### Shield screen (`orb/screens/Shield.js`, currently static)
+### Home screen
 
-- Render phase-aware copy from `sharedState`.
-- **Focus phase:** "Take a break" → decrement `breakPassesRemaining`, `clearShields()`, set `breakActiveUntil`, schedule `break.end`. Disable when passes = 0.
-- **Closure phase:** "Reflect to unlock" → enters the reflection flow.
+- **If gated:** prominent state ("Your day is locked — journal to begin") + start-journal CTA.
+- **If unlocked:** streak, today's intention (surfaced from the entry), and a "Lock In" CTA.
 
-### Reflection flow (voice-first — the core new build)
+### Morning journal flow (voice-first — the core new build)
 
-**Feelings → Speak → Adaptive prompts → Tomorrow's intention → Save**
+**Prompt → Speak → (optional 1 follow-up) → Save**
 
 - Capture audio + transcribe (on-device preferred, §8). Show live transcript.
-- Ask 1–3 prompts. MVP: a strong static prompt set. Adaptive/personalized prompts are v2 (needs entry history).
-- End by capturing tomorrow's one intention (this is how the "productivity" problem is solved by the ritual, not by a second daytime blocker).
-- On save → run completion check (§7) → set `journaledToday=true` → `clearShields()` → show a small payoff: a surfaced line from the entry + streak bump.
+- Intention prompts (MVP: strong static set), e.g. "What do you want today to be?", "What's the one thing that would make today a win?", "What might get in your way?"
+- On save → run completion check (§7) → `journaledToday=true` → `clearShields()` → payoff: a surfaced line from the entry + streak bump → then the choice: "Unlock my day" or "Lock in for the day."
+
+### Lock-in flow
+
+- Pick a duration (or "rest of day") → `applyShields` + `lockInActive`/`lockInUntil` + schedule `lockin.session` end. Optional break passes during the session (§11).
 
 ### Settings
 
-- Edit schedule, Focus mode, break budget, blocked apps (re-invoke `pickApps()`), privacy controls (export/delete). Replace the mock `cats` object entirely.
+- Edit `dayStartTime`, blocked apps (re-invoke `pickApps()`), lock-in defaults, privacy controls (export/delete). Replace the mock `cats` object entirely.
 
 ---
 
-## 7. The reflection & completion check (the hard product problem)
+## 7. The journal & completion check
 
-Journaling isn't machine-verifiable like steps/push-ups, and a resentful mumble is worth zero. The unlock must require **plausible engagement** without becoming an interrogation.
+The morning journal is the gate, so it needs some teeth — but a resentful mumble at 6am is worth zero, and this audience wants the enforcement, so bias toward a check that's **real but not an interrogation**.
 
 **MVP check (start lenient):**
 
-- Minimum spoken duration (e.g. ≥ 20s of speech) and a minimal content signal (the transcript actually responds to the prompt vs. "unlock unlock unlock").
-- If the first answer is thin, ask one adaptive follow-up; then pass regardless.
-- Bias toward letting people through and reflecting effort back gently ("short one today — want to add anything?"), betting good prompts pull sincerity over time.
+- Minimum spoken duration (e.g. ≥ 20s of speech) and a minimal content signal (the transcript actually engages the prompt vs. "unlock unlock unlock").
+- If the first answer is thin, ask one follow-up prompt; then pass regardless.
+- Reflect low effort back gently rather than blocking ("short one — want to add anything?").
 
-Instrument entry length / sincerity trend so you can tighten the check **only if** data shows gaming. Do not over-engineer this before launch.
+Instrument entry length / pass rate so the check can be tightened **only if** data shows gaming. Don't over-engineer pre-launch.
 
 ---
 
-## 8. Privacy & data (ship-blocker, not a later feature)
+## 8. Privacy & data (ship-blocker)
 
-Voice journals are among the most intimate data a person can hand over; **trust is the product**.
+Voice journals are intimate; **trust is the product**.
 
-- Prefer on-device transcription and storage; keep audio/transcripts in the app's own encrypted store, never in App-Group UserDefaults.
+- Prefer on-device transcription and storage; audio/transcripts in the app's own encrypted store, never in App-Group UserDefaults.
 - No training on entries by default — explicit, plainly-worded opt-in only.
-- One-tap export and delete. Make the privacy stance visible in onboarding, not buried.
+- One-tap export and delete, visible in onboarding.
 
 ---
 
-## 9. Sharp edges to preserve (from ref §6) + one to fix
+## 9. Sharp edges to preserve (ref §6) + one to fix
 
 - **Authorization must precede shielding** — keep the `.approved` guard in `applyShields`.
-- **Two lock paths must agree** via App-Group `sharedState` — keep both in sync.
-- **App-Group ~1MB cap** — keep the storage monitor; store only small state there (§2).
-- **Escape hatch is now real** — break passes (Phase A). Consider whether Closure needs a rare "skip tonight" pass too (open question, §11).
-- **Fix / harden:** the module-level `shieldOperationInProgress` flag is shared between apply and clear, so a concurrent op is silently dropped. Break passes add a lot more apply/clear churn than the prayer app had — make this a small queue or separate guards so a break re-lock can't be swallowed by an in-flight clear.
+- **Two lock paths must agree** via App-Group `sharedState`.
+- **App-Group ~1MB cap** — keep the storage monitor; only small state there (§2).
+- **`day.reset` now applies rather than clears shields** — double-check the extension does the inverse of the prayer app here; easy to get backwards.
+- **Fix / harden:** the module-level `shieldOperationInProgress` flag is shared between apply and clear, so a concurrent op is silently dropped. Lock-in start/stop + optional breaks add apply/clear churn — make this a small queue or separate guards so a re-lock can't be swallowed by an in-flight clear.
 
 ---
 
 ## 10. Scope & instrumentation
 
-### MVP (build the smallest thing that reveals the retention curve)
+### MVP
 
-- Real onboarding (authorize + real picker + schedule).
-- Phase B closure gate (evening reflect-to-unlock) wired to real shields — this alone is the product.
-- Voice capture + transcription + static prompts + tomorrow's intention + lenient completion check + unlock payoff.
-- Phase A focus block + break passes behind a toggle (default OFF, so the hero experience is clean).
-- Day rollover reset. One real privacy commitment (on-device + delete).
+- Real onboarding (authorize + real picker + `dayStartTime`).
+- Morning gate wired to real shields (`day.reset` applies; journal-save clears).
+- Voice capture + transcription + static intention prompts + lenient completion check + unlock payoff.
+- The post-journal Unlock / Lock-In choice + a basic lock-in session (fixed duration).
+- One real privacy commitment (on-device + delete).
 
 ### Out of scope for v1
 
 - Adaptive/personalized prompts (v2, needs entry data).
-- Morning intention as a separate gated flow (fold intention into the evening ritual for now).
-- Identifier rename (`lockedislam`/DeenShield/App-Group) — cosmetic, later.
-- Android (engine is Apple Screen Time only).
+- Lock-in break passes (ship only if §11 says so).
+- To-do lists / task verification (removed by design).
+- Identifier rename; Android (Apple Screen Time only).
 
 ### Instrument from day one
 
 - D1 / D7 / D30 retention.
-- % of users who keep the lock enabled after week 1 — the key signal on whether the coercion is earning its place. If people only tolerate it briefly, pivot toward opt-in accountability.
-- % who enable Focus mode (tells you if the "structured day" story is real or if Closure is the whole product).
-- Entry length / completion-check pass rate over time.
+- Morning gate completion rate and time-from-wake-to-journal — the core behavior signal. If people routinely fail to complete or journal very late, the morning gate is fighting them and you revisit timing.
+- % who use Lock-In, and whether it correlates with retention (tells you if the focus feature earns its place).
+- Completion-check pass rate / entry length over time.
 
 ---
 
 ## 11. Open decisions (need a call before/at build)
 
-- **Closure rigidity:** hard block, or a rare paid/earned "skip tonight" escape valve?
-- **Completion-check strictness** at launch (I recommend lenient — §7).
+- **`dayStartTime` default** (when the gate engages each morning — 05:00? user's wake time?).
+- **Completion-check strictness** at launch (recommend lenient — §7).
+- **Skip token:** ship a scarce "life happens" pass (e.g. 1–2/month, non-rolling) that unlocks a day without journaling for genuine emergencies? Removes the "sick and phone is bricked" horror story; scarcity stops it becoming the default. Recommend: yes, minimal.
+- **Lock-in breaks:** allow N short breaks inside a lock-in session, or make lock-in all-or-nothing until it ends?
+- **Lock-in max duration / early-exit:** can the user end a lock-in early, or is it committed once started?
 - **Default blocked categories** surfaced in onboarding.
-- **Focus mode default:** ship OFF (recommended — keeps the hero clean) or ON?
-- **`reflectFromTime` default** when Focus is off (e.g. 21:00?).
 
 ---
 
 ## Appendix — task checklist (usable as a coding-agent prompt)
 
-- [ ] Point `App.js` at the journal entry (already the case) and delete/retire the mock blocking in `orb/controller.js`; replace mock state with the §2 keys sourced from the bridge.
-- [ ] Onboarding: call `authorizeScreenTime()` + `pickApps()`; persist schedule + Focus config to `sharedState`.
+- [ ] Retire the mock blocking in `orb/controller.js`; replace mock state with the §2 keys sourced from the bridge.
+- [ ] Onboarding: `authorizeScreenTime()` + `pickApps()`; persist `dayStartTime` + blocked apps.
 - [ ] Port the `TodayChecklistScreen` foreground effect into the journal app with the §4 derivation (keep debounce + retry + operation-guard, hardened per §9).
-- [ ] Rewrite `DeviceActivityMonitorExtension` schedules/callbacks per §3.
-- [ ] Rewrite `ShieldConfigurationExtension` copy per phase (§5); deep-link "Reflect".
-- [ ] Build the voice reflection flow (capture, transcribe, prompts, intention, save) + the completion check (§7) that sets `journaledToday=true` and calls `clearShields()`.
-- [ ] Implement break passes: decrement, `clearShields`, `breakActiveUntil`, schedule `break.end` re-lock (§3/§6).
-- [ ] Implement `day.reset` (§3).
+- [ ] Rewrite `DeviceActivityMonitorExtension` schedules/callbacks per §3 — note `day.reset` applies shields, not clears.
+- [ ] Rewrite `ShieldConfigurationExtension` copy per phase (§5); deep-link "Journal".
+- [ ] Build the voice morning-journal flow (capture, transcribe, intention prompts, save) + the completion check (§7) that sets `journaledToday=true` and calls `clearShields()`.
+- [ ] Build the post-journal Unlock / Lock-In choice + lock-in session (`applyShields`, `lockInActive`/`lockInUntil`, schedule `lockin.session` end). Optional breaks per §11.
+- [ ] Implement `day.reset` (§3) — resets and re-engages the gate.
 - [ ] Privacy: on-device transcription + encrypted local store + export/delete (§8).
 - [ ] Wire analytics events for the §10 metrics.
-- [ ] Keep all `lockedislam` / DeenShield / App-Group identifiers unchanged; user-facing strings use the product's brand name (TBD — not yet decided).
+- [ ] Keep all `lockedislam` / DeenShield / App-Group identifiers unchanged; user-facing strings use the product's brand name (TBD).
