@@ -1,8 +1,8 @@
 {
   "expo": {
-    "scheme": "journalblocker",
+    "scheme": "journalblock",
     "name": "Journal Blocker",
-    "slug": "journal-blocker",
+    "slug": "journal-block",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/deen_shield_app_icon.png",
@@ -15,11 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.lockedislam",
+      "bundleIdentifier": "com.journalblock.app",
       "minimumOsVersion": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocationWhenInUseUsageDescription": "We need your location to calculate accurate prayer times, show the Qibla direction and nearby mosques.",
+        "NSLocationWhenInUseUsageDescription": "This app does not use your location.",
         "NSPrivacyPolicyURL": "https://deenshield.app/privacy"
       }
     },
@@ -29,7 +29,7 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.anonymous.lockedislam"
+      "package": "com.journalblock.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"

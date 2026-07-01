@@ -6,7 +6,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.lockedislam.shared</string>
+		<string>group.com.journalblock.shared</string>
 	</array>
 </dict>
 </plist>

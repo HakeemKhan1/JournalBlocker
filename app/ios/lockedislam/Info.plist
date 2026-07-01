@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>DeenShield</string>
+	<string>Journal Blocker</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -27,14 +27,14 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>lockedislam</string>
-				<string>com.anonymous.lockedislam</string>
+				<string>journalblock</string>
+				<string>com.journalblock.app</string>
 			</array>
 		</dict>
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>exp+lockedislam</string>
+				<string>exp+journalblock</string>
 			</array>
 		</dict>
 	</array>
@@ -54,7 +54,7 @@
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>We need your location to calculate accurate prayer times, show the Qibla direction and nearby mosques.</string>
+	<string>This app does not use your location.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

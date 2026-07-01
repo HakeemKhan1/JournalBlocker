@@ -23,8 +23,8 @@ class LockedIslamBridge: NSObject, RCTBridgeModule {
   static func moduleName() -> String! { return "LockedIslamBridge" }
   static func requiresMainQueueSetup() -> Bool { true }
 
-  private let appGroupId = "group.com.lockedislam.shared"
-  private static let logger = Logger(subsystem: "com.anonymous.lockedislam", category: "ScreenTime")
+  private let appGroupId = "group.com.journalblock.shared"
+  private static let logger = Logger(subsystem: "com.journalblock.app", category: "ScreenTime")
   private static let store = ManagedSettingsStore() // single store instance
 
   // Storage monitoring constants

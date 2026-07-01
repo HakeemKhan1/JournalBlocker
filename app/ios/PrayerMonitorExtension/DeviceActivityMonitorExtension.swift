@@ -32,9 +32,9 @@ extension DeviceActivityName {
 
 @available(iOSApplicationExtension 16.0, *)
 final class DeviceActivityMonitorExtension: DeviceActivityMonitor {
-    private let appGroupId = "group.com.lockedislam.shared"
+    private let appGroupId = "group.com.journalblock.shared"
     private static let store = ManagedSettingsStore()
-    private static let logger = Logger(subsystem: "com.anonymous.lockedislam", category: "JournalMonitor")
+    private static let logger = Logger(subsystem: "com.journalblock.app", category: "JournalMonitor")
 
     // MARK: - DeviceActivityMonitor Overrides
 

@@ -3,7 +3,7 @@ import React
 import SwiftUI
 import FamilyControls
 
-private let kAppGroupId = "group.com.lockedislam.shared" // same as LockedIslamBridge
+private let kAppGroupId = "group.com.journalblock.shared" // same as LockedIslamBridge
 
 // MARK: - SwiftUI view that shows selected app icons
 

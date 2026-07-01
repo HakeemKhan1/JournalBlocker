@@ -16,9 +16,9 @@ import os.log
 @available(iOSApplicationExtension 16.0, *)
 class ShieldConfigurationExtension: ShieldConfigurationDataSource {
 
-    private let appGroupId = "group.com.lockedislam.shared"
+    private let appGroupId = "group.com.journalblock.shared"
     private static let logger = Logger(
-        subsystem: "com.anonymous.lockedislam.DeenShieldShieldConfig",
+        subsystem: "com.journalblock.app.shield",
         category: "ShieldConfig"
     )
 
