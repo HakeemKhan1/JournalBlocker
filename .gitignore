@@ -1,0 +1,11 @@
+# dependencies
+node_modules/
+
+# Expo / build output
+.expo/
+dist/
+dist-web/
+web-build/
+
+# macOS
+.DS_Store
