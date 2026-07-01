@@ -5,7 +5,7 @@
     "slug": "journal-block",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/deen_shield_app_icon.png",
+    "icon": "./assets/app_icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
@@ -19,8 +19,7 @@
       "minimumOsVersion": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocationWhenInUseUsageDescription": "This app does not use your location.",
-        "NSPrivacyPolicyURL": "https://deenshield.app/privacy"
+        "NSLocationWhenInUseUsageDescription": "This app does not use your location."
       }
     },
     "android": {

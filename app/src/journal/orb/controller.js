@@ -7,7 +7,7 @@
 import { useRef, useState, useMemo, useEffect } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Bridge from '../../native/LockedIslamBridge';
+import * as Bridge from '../../native/BlockingBridge';
 import {
   ANSWERS, CAT_DESC, RECOMMENDED, PALETTE, SHAPES, THEME_META,
   FEELING_DEFS, JOURNAL_ENTRIES, INSIGHTS_DATA, HABITS,
