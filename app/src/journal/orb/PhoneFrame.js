@@ -1,16 +1,21 @@
 /**
- * The device chrome: a centered 390×844 phone (with status bar, notch and home
- * indicator) on the dark canvas, an optional left "screens" nav on wide
- * viewports, and the bottom tab bar. On a real phone-sized viewport the bezel
- * is dropped and the screen fills the window.
+ * App shell.
+ *
+ * On a REAL device we render full-screen using the OS safe-area insets — no
+ * fake status bar, notch, or side nav. The simulated "device frame" + left
+ * screens nav are a DESKTOP-BROWSER preview aid only (so a dev without a Mac
+ * can click between screens in a browser); they never render on native.
  */
 import React from 'react';
-import { View, Text, Pressable, ScrollView, Dimensions, Platform } from 'react-native';
+import { View, Text, Pressable, Dimensions, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { C, SANS, SERIF, G } from './theme';
+import { C, SANS, G } from './theme';
 
-const BEZEL = Dimensions.get('window').width >= 440;
+// Web + wide viewport → show the centered device-frame preview. Never on native.
+const BEZEL = Platform.OS === 'web' && Dimensions.get('window').width >= 440;
 
+/** Simulated status bar — used only in the web device-frame preview. */
 export function StatusBar() {
   return (
     <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 54, zIndex: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 30 }}>
@@ -43,9 +48,10 @@ const TAB_ICON = {
 };
 
 export function TabBar({ active, onTab }) {
+  const insets = useSafeAreaInsets();
   const items = [['home', 'Today'], ['history', 'Reflections'], ['insights', 'Insights'], ['settings', 'Settings']];
   return (
-    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.07)', backgroundColor: 'rgba(15,13,30,0.85)', paddingTop: 9, paddingBottom: 20 }}>
+    <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.07)', backgroundColor: 'rgba(15,13,30,0.85)', paddingTop: 9, paddingBottom: Math.max(insets.bottom, 12) }}>
       {items.map(([key, label]) => {
         const col = active === key ? C.acc : C.dim;
         return (
@@ -74,22 +80,38 @@ export function SideNav({ items }) {
   );
 }
 
-/** The phone device: gradient inner background, status bar, screen, tab bar, home indicator. */
+/**
+ * The app surface. Native → full-screen with real safe-area insets. Web wide →
+ * a simulated device frame for previewing.
+ */
 export function PhoneFrame({ children, tabBar }) {
+  const insets = useSafeAreaInsets();
+
+  if (!BEZEL) {
+    // Real device (or narrow web): fill the screen, respect the notch/home bar.
+    return (
+      <LinearGradient colors={G.phoneBg} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }} style={{ flex: 1 }}>
+        <View style={{ flex: 1, paddingTop: insets.top }}>
+          <View style={{ flex: 1, minHeight: 0 }}>{children}</View>
+          {tabBar}
+        </View>
+      </LinearGradient>
+    );
+  }
+
+  // Web desktop preview: simulated device with chrome.
   const inner = (
     <LinearGradient colors={G.phoneBg} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
-      style={{ flex: 1, borderRadius: BEZEL ? 46 : 0, overflow: 'hidden' }}>
+      style={{ flex: 1, borderRadius: 46, overflow: 'hidden' }}>
       <StatusBar />
-      {BEZEL ? <View style={{ position: 'absolute', top: 11, left: '50%', marginLeft: -58, width: 116, height: 33, backgroundColor: '#000', borderRadius: 20, zIndex: 51 }} /> : null}
+      <View style={{ position: 'absolute', top: 11, left: '50%', marginLeft: -58, width: 116, height: 33, backgroundColor: '#000', borderRadius: 20, zIndex: 51 }} />
       <View style={{ flex: 1, paddingTop: 54 }}>
         <View style={{ flex: 1, minHeight: 0 }}>{children}</View>
         {tabBar}
       </View>
-      {BEZEL ? <View style={{ position: 'absolute', bottom: 8, left: '50%', marginLeft: -66, width: 132, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', zIndex: 55 }} /> : null}
+      <View style={{ position: 'absolute', bottom: 8, left: '50%', marginLeft: -66, width: 132, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', zIndex: 55 }} />
     </LinearGradient>
   );
-
-  if (!BEZEL) return <View style={{ flex: 1 }}>{inner}</View>;
   return (
     <View style={{ width: 390, height: 844, borderRadius: 56, backgroundColor: '#050409', padding: 11, shadowColor: '#000', shadowOpacity: 0.85, shadowRadius: 60, shadowOffset: { width: 0, height: 40 } }}>
       {inner}
